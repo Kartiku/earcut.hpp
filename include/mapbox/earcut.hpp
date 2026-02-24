@@ -5,10 +5,34 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
-#include <memory>
+#include <new>
 #include <utility>
 #include <vector>
+
+// Platform-specific virtual memory support
+#if defined(_WIN32)
+#if !defined(WIN32_LEAN_AND_MEAN)
+#define WIN32_LEAN_AND_MEAN
+#define MAPBOX_EARCUT_UNDEF_WIN32_LEAN_AND_MEAN
+#endif
+#if !defined(NOMINMAX)
+#define NOMINMAX
+#define MAPBOX_EARCUT_UNDEF_NOMINMAX
+#endif
+#include <windows.h>
+#ifdef MAPBOX_EARCUT_UNDEF_WIN32_LEAN_AND_MEAN
+#undef WIN32_LEAN_AND_MEAN
+#undef MAPBOX_EARCUT_UNDEF_WIN32_LEAN_AND_MEAN
+#endif
+#ifdef MAPBOX_EARCUT_UNDEF_NOMINMAX
+#undef NOMINMAX
+#undef MAPBOX_EARCUT_UNDEF_NOMINMAX
+#endif
+#elif defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#endif
 
 namespace mapbox {
 
@@ -26,6 +50,9 @@ namespace detail {
 template <typename N = uint32_t>
 class Earcut {
 public:
+    // Index type used for all node references. 0 = null sentinel.
+    using NodeIndex = uint32_t;
+
     std::vector<N> indices;
     std::size_t vertices = 0;
 
@@ -34,31 +61,28 @@ public:
 
 private:
     struct Node {
+        Node() : x(0), y(0), i(0), steiner(0) {}
         Node(N index, double x_, double y_) : x(x_), y(y_), i(index), steiner(0) {}
-        Node(const Node&) = delete;
-        Node& operator=(const Node&) = delete;
-        Node(Node&&) = delete;
-        Node& operator=(Node&&) = delete;
 
-        const double x;
-        const double y;
+        double x;
+        double y;
 
-        // previous and next vertice nodes in a polygon ring
-        Node* prev = nullptr;
-        Node* next = nullptr;
+        // previous and next vertice nodes in a polygon ring (indices, 0 = null)
+        NodeIndex prev = 0;
+        NodeIndex next = 0;
 
         // z-order curve value
         int32_t z = 0;
 
         // original index in polygon
-        const N i : (sizeof(N) * 8 - 1);
+        N i : (sizeof(N) * 8 - 1);
 
         // indicates whether this is a steiner point
         N steiner : 1;
 
-        // previous and next nodes in z-order
-        Node* prevZ = nullptr;
-        Node* nextZ = nullptr;
+        // previous and next nodes in z-order (indices, 0 = null)
+        NodeIndex prevZ = 0;
+        NodeIndex nextZ = 0;
     };
 
     // Cache-optimized Triangle structure for repeated geometric tests
@@ -67,8 +91,8 @@ private:
         const double bx, by;
         const double cx, cy;
 
-        Triangle(const Node* a, const Node* b, const Node* c)
-            : ax(a->x), ay(a->y), bx(b->x), by(b->y), cx(c->x), cy(c->y) {}
+        Triangle(const Node& a, const Node& b, const Node& c)
+            : ax(a.x), ay(a.y), bx(b.x), by(b.y), cx(c.x), cy(c.y) {}
 
         inline double area() const { return (by - ay) * (cx - bx) - (bx - ax) * (cy - by); }
 
@@ -79,120 +103,157 @@ private:
     };
 
     template <typename Ring>
-    Node* linkedList(const Ring& points, const bool clockwise);
-    Node* filterPoints(Node* start, Node* end = nullptr);
-    void earcutLinked(Node* ear, int pass = 0);
-    bool isEar(Node* ear);
-    bool isEarHashed(Node* ear);
-    Node* cureLocalIntersections(Node* start);
-    void splitEarcut(Node* start);
+    NodeIndex linkedList(const Ring& points, const bool clockwise);
+    NodeIndex filterPoints(NodeIndex start, NodeIndex end = 0);
+    void earcutLinked(NodeIndex ear, int pass = 0);
+    bool isEar(NodeIndex ear);
+    bool isEarHashed(NodeIndex ear);
+    NodeIndex cureLocalIntersections(NodeIndex start);
+    void splitEarcut(NodeIndex start);
     template <typename Polygon>
-    Node* eliminateHoles(const Polygon& points, Node* outerNode);
-    Node* eliminateHole(Node* hole, Node* outerNode);
-    Node* findHoleBridge(Node* hole, Node* outerNode);
-    bool sectorContainsSector(const Node* m, const Node* p);
-    void indexCurve(Node* start);
-    Node* sortLinked(Node* list);
+    NodeIndex eliminateHoles(const Polygon& points, NodeIndex outerNode);
+    NodeIndex eliminateHole(NodeIndex hole, NodeIndex outerNode);
+    NodeIndex findHoleBridge(NodeIndex hole, NodeIndex outerNode);
+    bool sectorContainsSector(NodeIndex m, NodeIndex p);
+    void indexCurve(NodeIndex start);
+    NodeIndex sortLinked(NodeIndex list);
     int32_t zOrder(const double x_, const double y_);
-    Node* getLeftmost(Node* start);
+    NodeIndex getLeftmost(NodeIndex start);
     bool pointInTriangle(double ax, double ay, double bx, double by, double cx, double cy, double px, double py) const;
-    bool isValidDiagonal(Node* a, Node* b);
-    double area(const Node* p, const Node* q, const Node* r) const;
-    bool equals(const Node* p1, const Node* p2);
-    bool intersects(const Node* p1, const Node* q1, const Node* p2, const Node* q2);
-    bool onSegment(const Node* p, const Node* q, const Node* r);
-    int sign(double val);
-    bool intersectsPolygon(const Node* a, const Node* b);
-    bool locallyInside(const Node* a, const Node* b);
-    bool middleInside(const Node* a, const Node* b);
-    Node* splitPolygon(Node* a, Node* b);
+    bool isValidDiagonal(NodeIndex a, NodeIndex b);
+    double area(NodeIndex p, NodeIndex q, NodeIndex r) const;
+    bool equals(NodeIndex p1, NodeIndex p2) const;
+    bool intersects(NodeIndex p1, NodeIndex q1, NodeIndex p2, NodeIndex q2) const;
+    bool onSegment(NodeIndex p, NodeIndex q, NodeIndex r) const;
+    int sign(double val) const;
+    bool intersectsPolygon(NodeIndex a, NodeIndex b) const;
+    bool locallyInside(NodeIndex a, NodeIndex b) const;
+    bool middleInside(NodeIndex a, NodeIndex b) const;
+    NodeIndex splitPolygon(NodeIndex a, NodeIndex b);
     template <typename Point>
-    Node* insertNode(std::size_t i, const Point& p, Node* last);
-    void removeNode(Node* p);
+    NodeIndex insertNode(std::size_t i, const Point& p, NodeIndex last);
+    void removeNode(NodeIndex p);
 
     bool hashing;
     double minX, maxX;
     double minY, maxY;
     double inv_size = 0;
 
-    template <typename T, typename Alloc = std::allocator<T>>
-    class ObjectPool {
-    public:
-        ObjectPool() { allocateNewBlock(256); }
-        ObjectPool(std::size_t blockSize_) : baseBlockSize(blockSize_) {
-            allocateNewBlock(std::max<std::size_t>(blockSize_, 256));
-        }
-        ~ObjectPool() { clear(); }
-        template <typename... Args>
-        T* construct(Args&&... args) {
-            // If current block is full, move to next block or allocate new one
-            if (currentIndex >= baseBlockSize) {
-                currentBlockIndex++;
-                if (currentBlockIndex < memoryBlocks.size()) {
-                    // Reuse existing block
-                    currentIndex = 0;
-                } else {
-                    // Allocate a new one
-                    allocateNewBlock(baseBlockSize);
-                }
-            }
+    // Arena allocator for nodes using virtual memory with demand paging.
+    // Reserves a large virtual address range upfront. On POSIX, pages are
+    // automatically backed by physical memory on first write. On Windows,
+    // pages are explicitly committed as the arena grows.
+    // Index 0 is a null sentinel; real nodes start at index 1.
+    class NodeArena {
+        // Maximum number of nodes the arena can hold.
+        // 4M nodes * 40 bytes = ~160MB of virtual address space.
+        static constexpr std::size_t kMaxNodes = 1u << 22;
+        static constexpr std::size_t kPageSize = 4096;
 
-            T* object = memoryBlocks[currentBlockIndex].get() + currentIndex;
-            alloc_traits::construct(alloc, object, std::forward<Args>(args)...);
-            totalObjects++;
-            currentIndex++;
-            return object;
-        }
-        void reset() { clear(); }
-        void clear() {
-            // Destroy all objects, but keep blocks allocated for reuse
-            std::size_t objectsDestroyed = 0;
-            for (std::size_t blockIdx = 0; blockIdx < memoryBlocks.size() && objectsDestroyed < totalObjects;
-                 ++blockIdx) {
-                // check if we are in the last block
-                std::size_t objectsInThisBlock = std::min(baseBlockSize, totalObjects - objectsDestroyed);
-                for (std::size_t i = 0; i < objectsInThisBlock; ++i) {
-                    T* object = memoryBlocks[blockIdx].get() + i;
-                    alloc_traits::destroy(alloc, object);
-                }
-                objectsDestroyed += objectsInThisBlock;
+    public:
+        NodeArena() { initReserve(); }
+
+        ~NodeArena() { releaseAll(); }
+
+        NodeArena(const NodeArena&) = delete;
+        NodeArena& operator=(const NodeArena&) = delete;
+        NodeArena(NodeArena&&) = delete;
+        NodeArena& operator=(NodeArena&&) = delete;
+
+        template <typename... Args>
+        NodeIndex construct(Args&&... args) {
+            NodeIndex idx;
+            if (freeHead_ != 0) {
+                idx = freeHead_;
+                freeHead_ = data_[freeHead_].next;
+            } else {
+                idx = static_cast<NodeIndex>(size_);
+                ensureCommitted(size_ + 1);
+                size_++;
             }
-            // Reset to start from first block again
-            currentBlockIndex = 0;
-            currentIndex = 0;
-            totalObjects = 0;
+            new (&data_[idx]) Node(std::forward<Args>(args)...);
+            return idx;
         }
+
+        void freeNode(NodeIndex idx) {
+            assert(idx != 0);
+            data_[idx].next = freeHead_;
+            freeHead_ = idx;
+        }
+
+        void reset() {
+            size_ = 1; // keep sentinel at index 0
+            freeHead_ = 0;
+        }
+
+        Node& operator[](NodeIndex idx) { return data_[idx]; }
+        const Node& operator[](NodeIndex idx) const { return data_[idx]; }
 
     private:
-        Alloc alloc;
-        typedef typename std::allocator_traits<Alloc> alloc_traits;
+        Node* data_ = nullptr;
+        std::size_t size_ = 0;
+        NodeIndex freeHead_ = 0;
+#if defined(_WIN32)
+        std::size_t committed_ = 0; // bytes committed so far
+#endif
 
-        // Custom deleter that uses the allocator
-        struct AllocDeleter {
-            Alloc alloc;
-            std::size_t capacity;
-            void operator()(T* ptr) { alloc_traits::deallocate(alloc, ptr, capacity); }
-        };
+        void initReserve() {
+            const std::size_t totalBytes = kMaxNodes * sizeof(Node);
+#if defined(_WIN32)
+            // Reserve virtual address space without committing physical memory
+            data_ = static_cast<Node*>(::VirtualAlloc(nullptr, totalBytes, MEM_RESERVE, PAGE_NOACCESS));
+            if (!data_) throw std::bad_alloc();
+            committed_ = 0;
+            // Commit first page for the null sentinel
+            ensureCommitted(1);
+#elif defined(__unix__) || defined(__APPLE__)
+            // mmap reserves address space; pages are demand-faulted on first write
+            data_ = static_cast<Node*>(
+                ::mmap(nullptr, totalBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+            if (data_ == MAP_FAILED) {
+                data_ = nullptr;
+                throw std::bad_alloc();
+            }
+#else
+            // Fallback: malloc
+            data_ = static_cast<Node*>(std::malloc(totalBytes));
+            if (!data_) throw std::bad_alloc();
+#endif
+            new (&data_[0]) Node(); // index 0 = null sentinel
+            size_ = 1;
+        }
 
-        std::vector<std::unique_ptr<T[], AllocDeleter>> memoryBlocks;
-        std::vector<std::size_t> blockCapacities;
-        std::size_t currentBlockIndex = 0;
-        std::size_t currentIndex = 0;
-        std::size_t totalObjects = 0;
-        std::size_t baseBlockSize = 256;
+        void ensureCommitted(std::size_t nodeCount) {
+#if defined(_WIN32)
+            std::size_t neededBytes = nodeCount * sizeof(Node);
+            if (neededBytes > committed_) {
+                // Round up to page boundary
+                std::size_t newCommitted = (neededBytes + kPageSize - 1) & ~(kPageSize - 1);
+                if (!::VirtualAlloc(data_, newCommitted, MEM_COMMIT, PAGE_READWRITE)) throw std::bad_alloc();
+                committed_ = newCommitted;
+            }
+#else
+            (void)nodeCount;
+#endif
+        }
 
-        void allocateNewBlock(std::size_t capacity) {
-            T* rawMemory = alloc_traits::allocate(alloc, capacity);
-            auto newBlock = std::unique_ptr<T[], AllocDeleter>(rawMemory, AllocDeleter{alloc, capacity});
-            memoryBlocks.push_back(std::move(newBlock));
-            blockCapacities.push_back(capacity);
-            currentBlockIndex = memoryBlocks.size() - 1;
-            currentIndex = 0;
+        void releaseAll() {
+            if (!data_) return;
+            const std::size_t totalBytes = kMaxNodes * sizeof(Node);
+#if defined(_WIN32)
+            (void)totalBytes;
+            ::VirtualFree(data_, 0, MEM_RELEASE);
+#elif defined(__unix__) || defined(__APPLE__)
+            ::munmap(data_, totalBytes);
+#else
+            std::free(data_);
+#endif
+            data_ = nullptr;
         }
     };
 
-    std::unique_ptr<ObjectPool<Node>> nodes;
-    std::vector<Node*> holeQueue;
+    NodeArena arena;
+    std::vector<NodeIndex> holeQueue;
 };
 
 template <typename N>
@@ -214,32 +275,27 @@ void Earcut<N>::operator()(const Polygon& points) {
         len += points[i].size();
     }
 
-    // estimate size of nodes and indices
-    if (!nodes) {
-        std::size_t estimatedNodes = len * 3 / 2;
-        nodes = std::make_unique<ObjectPool<Node>>(std::max<std::size_t>(estimatedNodes, 256));
-    }
     indices.reserve(len + points[0].size());
 
-    Node* outerNode = linkedList(points[0], true);
-    if (!outerNode || outerNode->prev == outerNode->next) return;
+    NodeIndex outerNode = linkedList(points[0], true);
+    if (outerNode == 0 || arena[outerNode].prev == arena[outerNode].next) return;
 
     if (points.size() > 1) outerNode = eliminateHoles(points, outerNode);
 
     // if the shape is not too simple, we'll use z-order curve hash later; calculate polygon bbox
     hashing = threshold < 0;
     if (hashing) {
-        Node* p = outerNode->next;
-        minX = maxX = outerNode->x;
-        minY = maxY = outerNode->y;
+        NodeIndex p = arena[outerNode].next;
+        minX = maxX = arena[outerNode].x;
+        minY = maxY = arena[outerNode].y;
         do {
-            x = p->x;
-            y = p->y;
+            x = arena[p].x;
+            y = arena[p].y;
             minX = std::min<double>(minX, x);
             minY = std::min<double>(minY, y);
             maxX = std::max<double>(maxX, x);
             maxY = std::max<double>(maxY, y);
-            p = p->next;
+            p = arena[p].next;
         } while (p != outerNode);
 
         // minX, minY and inv_size are later used to transform coords into integers for z-order calculation
@@ -249,19 +305,19 @@ void Earcut<N>::operator()(const Polygon& points) {
 
     earcutLinked(outerNode);
 
-    nodes->clear();
+    arena.reset();
     holeQueue.clear();
 }
 
 // create a circular doubly linked list from polygon points in the specified winding order
 template <typename N>
 template <typename Ring>
-typename Earcut<N>::Node* Earcut<N>::linkedList(const Ring& points, const bool clockwise) {
+typename Earcut<N>::NodeIndex Earcut<N>::linkedList(const Ring& points, const bool clockwise) {
     using Point = typename Ring::value_type;
     double sum = 0;
     const std::size_t len = points.size();
     std::size_t i, j;
-    Node* last = nullptr;
+    NodeIndex last = 0;
 
     // calculate original winding order of a polygon ring
     for (i = 0, j = len > 0 ? len - 1 : 0; i < len; j = i++) {
@@ -281,9 +337,9 @@ typename Earcut<N>::Node* Earcut<N>::linkedList(const Ring& points, const bool c
         for (i = len; i-- > 0;) last = insertNode(vertices + i, points[i], last);
     }
 
-    if (last && equals(last, last->next)) {
+    if (last != 0 && equals(last, arena[last].next)) {
         removeNode(last);
-        last = last->next;
+        last = arena[last].next;
     }
 
     vertices += len;
@@ -293,23 +349,23 @@ typename Earcut<N>::Node* Earcut<N>::linkedList(const Ring& points, const bool c
 
 // eliminate colinear or duplicate points
 template <typename N>
-typename Earcut<N>::Node* Earcut<N>::filterPoints(Node* start, Node* end) {
-    if (!end) end = start;
+typename Earcut<N>::NodeIndex Earcut<N>::filterPoints(NodeIndex start, NodeIndex end) {
+    if (end == 0) end = start;
 
-    Node* p = start;
+    NodeIndex p = start;
     bool again;
     do {
         again = false;
 
-        if (!p->steiner && (equals(p, p->next) || area(p->prev, p, p->next) == 0)) {
+        if (!arena[p].steiner && (equals(p, arena[p].next) || area(arena[p].prev, p, arena[p].next) == 0)) {
             removeNode(p);
-            p = end = p->prev;
+            p = end = arena[p].prev;
 
-            if (p == p->next) break;
+            if (p == arena[p].next) break;
             again = true;
 
         } else {
-            p = p->next;
+            p = arena[p].next;
         }
     } while (again || p != end);
 
@@ -318,32 +374,32 @@ typename Earcut<N>::Node* Earcut<N>::filterPoints(Node* start, Node* end) {
 
 // main ear slicing loop which triangulates a polygon (given as a linked list)
 template <typename N>
-void Earcut<N>::earcutLinked(Node* ear, int pass) {
-    if (!ear) return;
+void Earcut<N>::earcutLinked(NodeIndex ear, int pass) {
+    if (ear == 0) return;
 
     // interlink polygon nodes in z-order
     if (!pass && hashing) indexCurve(ear);
 
-    Node* stop = ear;
-    Node* prev;
-    Node* next;
+    NodeIndex stop = ear;
+    NodeIndex prev;
+    NodeIndex next;
 
     // iterate through ears, slicing them one by one
-    while (ear->prev != ear->next) {
-        prev = ear->prev;
-        next = ear->next;
+    while (arena[ear].prev != arena[ear].next) {
+        prev = arena[ear].prev;
+        next = arena[ear].next;
 
         if (hashing ? isEarHashed(ear) : isEar(ear)) {
             // cut off the triangle
-            indices.emplace_back(prev->i);
-            indices.emplace_back(ear->i);
-            indices.emplace_back(next->i);
+            indices.emplace_back(static_cast<N>(arena[prev].i));
+            indices.emplace_back(static_cast<N>(arena[ear].i));
+            indices.emplace_back(static_cast<N>(arena[next].i));
 
             removeNode(ear);
 
             // skipping the next vertice leads to less sliver triangles
-            ear = next->next;
-            stop = next->next;
+            ear = arena[next].next;
+            stop = arena[next].next;
 
             continue;
         }
@@ -371,34 +427,32 @@ void Earcut<N>::earcutLinked(Node* ear, int pass) {
 
 // check whether a polygon node forms a valid ear with adjacent nodes
 template <typename N>
-bool Earcut<N>::isEar(Node* ear) {
-    const Node* a = ear->prev;
-    const Node* b = ear;
-    const Node* c = ear->next;
+bool Earcut<N>::isEar(NodeIndex ear) {
+    const NodeIndex a = arena[ear].prev;
+    const NodeIndex c = arena[ear].next;
 
     // Create triangle with cached coordinates and bounding box
-    const Triangle tri(a, b, c);
+    const Triangle tri(arena[a], arena[ear], arena[c]);
     if (tri.area() >= 0) return false; // reflex, can't be an ear
 
     // now make sure we don't have other points inside the potential ear
-    Node* p = ear->next->next;
+    NodeIndex p = arena[c].next;
 
-    while (p != ear->prev) {
-        if (tri.containsPoint(p->x, p->y) && area(p->prev, p, p->next) >= 0) return false;
-        p = p->next;
+    while (p != a) {
+        if (tri.containsPoint(arena[p].x, arena[p].y) && area(arena[p].prev, p, arena[p].next) >= 0) return false;
+        p = arena[p].next;
     }
 
     return true;
 }
 
 template <typename N>
-bool Earcut<N>::isEarHashed(Node* ear) {
-    const Node* a = ear->prev;
-    const Node* b = ear;
-    const Node* c = ear->next;
+bool Earcut<N>::isEarHashed(NodeIndex ear) {
+    const NodeIndex a = arena[ear].prev;
+    const NodeIndex c = arena[ear].next;
 
     // Create triangle with cached coordinates and bounding box
-    const Triangle tri(a, b, c);
+    const Triangle tri(arena[a], arena[ear], arena[c]);
     if (tri.area() >= 0) return false; // reflex, can't be an ear
 
     // triangle bbox; min & max are calculated like this for speed
@@ -412,21 +466,23 @@ bool Earcut<N>::isEarHashed(Node* ear) {
     const int32_t maxZ = zOrder(maxTX, maxTY);
 
     // first look for points inside the triangle in increasing z-order
-    Node* p = ear->nextZ;
+    NodeIndex p = arena[ear].nextZ;
 
-    while (p && p->z <= maxZ) {
-        if (p != ear->prev && p != ear->next && tri.containsPoint(p->x, p->y) && area(p->prev, p, p->next) >= 0)
+    while (p != 0 && arena[p].z <= maxZ) {
+        if (p != a && p != c && tri.containsPoint(arena[p].x, arena[p].y) &&
+            area(arena[p].prev, p, arena[p].next) >= 0)
             return false;
-        p = p->nextZ;
+        p = arena[p].nextZ;
     }
 
     // then look for points in decreasing z-order
-    p = ear->prevZ;
+    p = arena[ear].prevZ;
 
-    while (p && p->z >= minZ) {
-        if (p != ear->prev && p != ear->next && tri.containsPoint(p->x, p->y) && area(p->prev, p, p->next) >= 0)
+    while (p != 0 && arena[p].z >= minZ) {
+        if (p != a && p != c && tri.containsPoint(arena[p].x, arena[p].y) &&
+            area(arena[p].prev, p, arena[p].next) >= 0)
             return false;
-        p = p->prevZ;
+        p = arena[p].prevZ;
     }
 
     return true;
@@ -434,25 +490,26 @@ bool Earcut<N>::isEarHashed(Node* ear) {
 
 // go through all polygon nodes and cure small local self-intersections
 template <typename N>
-typename Earcut<N>::Node* Earcut<N>::cureLocalIntersections(Node* start) {
-    Node* p = start;
+typename Earcut<N>::NodeIndex Earcut<N>::cureLocalIntersections(NodeIndex start) {
+    NodeIndex p = start;
     do {
-        Node* a = p->prev;
-        Node* b = p->next->next;
+        NodeIndex a = arena[p].prev;
+        NodeIndex pn = arena[p].next;
+        NodeIndex b = arena[pn].next;
 
         // a self-intersection where edge (v[i-1],v[i]) intersects (v[i+1],v[i+2])
-        if (!equals(a, b) && intersects(a, p, p->next, b) && locallyInside(a, b) && locallyInside(b, a)) {
-            indices.emplace_back(a->i);
-            indices.emplace_back(p->i);
-            indices.emplace_back(b->i);
+        if (!equals(a, b) && intersects(a, p, pn, b) && locallyInside(a, b) && locallyInside(b, a)) {
+            indices.emplace_back(static_cast<N>(arena[a].i));
+            indices.emplace_back(static_cast<N>(arena[p].i));
+            indices.emplace_back(static_cast<N>(arena[b].i));
 
             // remove two nodes involved
             removeNode(p);
-            removeNode(p->next);
+            removeNode(pn);
 
             p = start = b;
         }
-        p = p->next;
+        p = arena[p].next;
     } while (p != start);
 
     return filterPoints(p);
@@ -460,46 +517,47 @@ typename Earcut<N>::Node* Earcut<N>::cureLocalIntersections(Node* start) {
 
 // try splitting polygon into two and triangulate them independently
 template <typename N>
-void Earcut<N>::splitEarcut(Node* start) {
+void Earcut<N>::splitEarcut(NodeIndex start) {
     // look for a valid diagonal that divides the polygon into two
-    Node* a = start;
+    NodeIndex a = start;
     do {
-        Node* b = a->next->next;
-        while (b != a->prev) {
-            if (a->i != b->i && isValidDiagonal(a, b)) {
+        NodeIndex b = arena[arena[a].next].next;
+        while (b != arena[a].prev) {
+            if (arena[a].i != arena[b].i && isValidDiagonal(a, b)) {
                 // split the polygon in two by the diagonal
-                Node* c = splitPolygon(a, b);
+                NodeIndex c = splitPolygon(a, b);
 
                 // filter colinear points around the cuts
-                a = filterPoints(a, a->next);
-                c = filterPoints(c, c->next);
+                a = filterPoints(a, arena[a].next);
+                c = filterPoints(c, arena[c].next);
 
                 // run earcut on each half
                 earcutLinked(a);
                 earcutLinked(c);
                 return;
             }
-            b = b->next;
+            b = arena[b].next;
         }
-        a = a->next;
+        a = arena[a].next;
     } while (a != start);
 }
 
 // link every hole into the outer loop, producing a single-ring polygon without holes
 template <typename N>
 template <typename Polygon>
-typename Earcut<N>::Node* Earcut<N>::eliminateHoles(const Polygon& points, Node* outerNode) {
+typename Earcut<N>::NodeIndex Earcut<N>::eliminateHoles(const Polygon& points, NodeIndex outerNode) {
     const size_t len = points.size();
 
     holeQueue.clear();
     for (size_t i = 1; i < len; i++) {
-        Node* list = linkedList(points[i], false);
-        if (list) {
-            if (list == list->next) list->steiner = true;
+        NodeIndex list = linkedList(points[i], false);
+        if (list != 0) {
+            if (list == arena[list].next) arena[list].steiner = true;
             holeQueue.push_back(getLeftmost(list));
         }
     }
-    std::sort(holeQueue.begin(), holeQueue.end(), [](const Node* a, const Node* b) { return a->x < b->x; });
+    std::sort(holeQueue.begin(), holeQueue.end(),
+              [this](NodeIndex a, NodeIndex b) { return arena[a].x < arena[b].x; });
 
     // process holes from left to right
     for (size_t i = 0; i < holeQueue.size(); i++) {
@@ -511,71 +569,74 @@ typename Earcut<N>::Node* Earcut<N>::eliminateHoles(const Polygon& points, Node*
 
 // find a bridge between vertices that connects hole with an outer ring and and link it
 template <typename N>
-typename Earcut<N>::Node* Earcut<N>::eliminateHole(Node* hole, Node* outerNode) {
-    Node* bridge = findHoleBridge(hole, outerNode);
-    if (!bridge) {
+typename Earcut<N>::NodeIndex Earcut<N>::eliminateHole(NodeIndex hole, NodeIndex outerNode) {
+    NodeIndex bridge = findHoleBridge(hole, outerNode);
+    if (bridge == 0) {
         return outerNode;
     }
 
-    Node* bridgeReverse = splitPolygon(bridge, hole);
+    NodeIndex bridgeReverse = splitPolygon(bridge, hole);
 
     // filter collinear points around the cuts
-    filterPoints(bridgeReverse, bridgeReverse->next);
+    filterPoints(bridgeReverse, arena[bridgeReverse].next);
 
     // Check if input node was removed by the filtering
-    return filterPoints(bridge, bridge->next);
+    return filterPoints(bridge, arena[bridge].next);
 }
 
 // David Eberly's algorithm for finding a bridge between hole and outer polygon
 template <typename N>
-typename Earcut<N>::Node* Earcut<N>::findHoleBridge(Node* hole, Node* outerNode) {
-    Node* p = outerNode;
-    double hx = hole->x;
-    double hy = hole->y;
+typename Earcut<N>::NodeIndex Earcut<N>::findHoleBridge(NodeIndex hole, NodeIndex outerNode) {
+    NodeIndex p = outerNode;
+    double hx = arena[hole].x;
+    double hy = arena[hole].y;
     double qx = -std::numeric_limits<double>::infinity();
-    Node* m = nullptr;
+    NodeIndex m = 0;
 
     // find a segment intersected by a ray from the hole's leftmost Vertex to the left;
     // segment's endpoint with lesser x will be potential connection Vertex
     do {
-        if (hy <= p->y && hy >= p->next->y && p->next->y != p->y) {
-            double x = p->x + (hy - p->y) * (p->next->x - p->x) / (p->next->y - p->y);
+        NodeIndex pNext = arena[p].next;
+        if (hy <= arena[p].y && hy >= arena[pNext].y && arena[pNext].y != arena[p].y) {
+            double x = arena[p].x + (hy - arena[p].y) * (arena[pNext].x - arena[p].x) / (arena[pNext].y - arena[p].y);
             if (x <= hx && x > qx) {
                 qx = x;
-                m = p->x < p->next->x ? p : p->next;
+                m = arena[p].x < arena[pNext].x ? p : pNext;
                 if (x == hx) return m; // hole touches outer segment; pick leftmost endpoint
             }
         }
-        p = p->next;
+        p = pNext;
     } while (p != outerNode);
 
-    if (!m) return 0;
+    if (m == 0) return 0;
 
     // look for points inside the triangle of hole Vertex, segment intersection and endpoint;
     // if there are no points found, we have a valid connection;
     // otherwise choose the Vertex of the minimum angle with the ray as connection Vertex
 
-    const Node* stop = m;
+    const NodeIndex stop = m;
     double tanMin = std::numeric_limits<double>::infinity();
     double tanCur = 0;
 
     p = m;
-    double mx = m->x;
-    double my = m->y;
+    double mx = arena[m].x;
+    double my = arena[m].y;
 
     do {
-        if (hx >= p->x && p->x >= mx && hx != p->x &&
-            pointInTriangle(hy < my ? hx : qx, hy, mx, my, hy < my ? qx : hx, hy, p->x, p->y)) {
-            tanCur = std::abs(hy - p->y) / (hx - p->x); // tangential
+        if (hx >= arena[p].x && arena[p].x >= mx && hx != arena[p].x &&
+            pointInTriangle(
+                hy < my ? hx : qx, hy, mx, my, hy < my ? qx : hx, hy, arena[p].x, arena[p].y)) {
+            tanCur = std::abs(hy - arena[p].y) / (hx - arena[p].x); // tangential
 
             if (locallyInside(p, hole) &&
-                (tanCur < tanMin || (tanCur == tanMin && (p->x > m->x || sectorContainsSector(m, p))))) {
+                (tanCur < tanMin ||
+                 (tanCur == tanMin && (arena[p].x > arena[m].x || sectorContainsSector(m, p))))) {
                 m = p;
                 tanMin = tanCur;
             }
         }
 
-        p = p->next;
+        p = arena[p].next;
     } while (p != stop);
 
     return m;
@@ -583,25 +644,25 @@ typename Earcut<N>::Node* Earcut<N>::findHoleBridge(Node* hole, Node* outerNode)
 
 // whether sector in vertex m contains sector in vertex p in the same coordinates
 template <typename N>
-bool Earcut<N>::sectorContainsSector(const Node* m, const Node* p) {
-    return area(m->prev, m, p->prev) < 0 && area(p->next, m, m->next) < 0;
+bool Earcut<N>::sectorContainsSector(NodeIndex m, NodeIndex p) {
+    return area(arena[m].prev, m, arena[p].prev) < 0 && area(arena[p].next, m, arena[m].next) < 0;
 }
 
 // interlink polygon nodes in z-order
 template <typename N>
-void Earcut<N>::indexCurve(Node* start) {
-    assert(start);
-    Node* p = start;
+void Earcut<N>::indexCurve(NodeIndex start) {
+    assert(start != 0);
+    NodeIndex p = start;
 
     do {
-        p->z = p->z ? p->z : zOrder(p->x, p->y);
-        p->prevZ = p->prev;
-        p->nextZ = p->next;
-        p = p->next;
+        if (arena[p].z == 0) arena[p].z = zOrder(arena[p].x, arena[p].y);
+        arena[p].prevZ = arena[p].prev;
+        arena[p].nextZ = arena[p].next;
+        p = arena[p].next;
     } while (p != start);
 
-    p->prevZ->nextZ = nullptr;
-    p->prevZ = nullptr;
+    arena[arena[p].prevZ].nextZ = 0;
+    arena[p].prevZ = 0;
 
     sortLinked(p);
 }
@@ -609,65 +670,65 @@ void Earcut<N>::indexCurve(Node* start) {
 // Simon Tatham's linked list merge sort algorithm
 // http://www.chiark.greenend.org.uk/~sgtatham/algorithms/listsort.html
 template <typename N>
-typename Earcut<N>::Node* Earcut<N>::sortLinked(Node* list) {
-    assert(list);
-    Node* p;
-    Node* q;
-    Node* e;
-    Node* tail;
+typename Earcut<N>::NodeIndex Earcut<N>::sortLinked(NodeIndex list) {
+    assert(list != 0);
+    NodeIndex p;
+    NodeIndex q;
+    NodeIndex e;
+    NodeIndex tail;
     int i, numMerges, pSize, qSize;
     int inSize = 1;
 
     for (;;) {
         p = list;
-        list = nullptr;
-        tail = nullptr;
+        list = 0;
+        tail = 0;
         numMerges = 0;
 
-        while (p) {
+        while (p != 0) {
             numMerges++;
             q = p;
             pSize = 0;
             for (i = 0; i < inSize; i++) {
                 pSize++;
-                q = q->nextZ;
-                if (!q) break;
+                q = arena[q].nextZ;
+                if (q == 0) break;
             }
 
             qSize = inSize;
 
-            while (pSize > 0 || (qSize > 0 && q)) {
+            while (pSize > 0 || (qSize > 0 && q != 0)) {
                 if (pSize == 0) {
                     e = q;
-                    q = q->nextZ;
+                    q = arena[q].nextZ;
                     qSize--;
-                } else if (qSize == 0 || !q) {
+                } else if (qSize == 0 || q == 0) {
                     e = p;
-                    p = p->nextZ;
+                    p = arena[p].nextZ;
                     pSize--;
-                } else if (p->z <= q->z) {
+                } else if (arena[p].z <= arena[q].z) {
                     e = p;
-                    p = p->nextZ;
+                    p = arena[p].nextZ;
                     pSize--;
                 } else {
                     e = q;
-                    q = q->nextZ;
+                    q = arena[q].nextZ;
                     qSize--;
                 }
 
-                if (tail)
-                    tail->nextZ = e;
+                if (tail != 0)
+                    arena[tail].nextZ = e;
                 else
                     list = e;
 
-                e->prevZ = tail;
+                arena[e].prevZ = tail;
                 tail = e;
             }
 
             p = q;
         }
 
-        tail->nextZ = nullptr;
+        arena[tail].nextZ = 0;
 
         if (numMerges <= 1) return list;
 
@@ -697,12 +758,13 @@ int32_t Earcut<N>::zOrder(const double x_, const double y_) {
 
 // find the leftmost node of a polygon ring
 template <typename N>
-typename Earcut<N>::Node* Earcut<N>::getLeftmost(Node* start) {
-    Node* p = start;
-    Node* leftmost = start;
+typename Earcut<N>::NodeIndex Earcut<N>::getLeftmost(NodeIndex start) {
+    NodeIndex p = start;
+    NodeIndex leftmost = start;
     do {
-        if (p->x < leftmost->x || (p->x == leftmost->x && p->y < leftmost->y)) leftmost = p;
-        p = p->next;
+        if (arena[p].x < arena[leftmost].x || (arena[p].x == arena[leftmost].x && arena[p].y < arena[leftmost].y))
+            leftmost = p;
+        p = arena[p].next;
     } while (p != start);
 
     return leftmost;
@@ -718,30 +780,32 @@ bool Earcut<N>::pointInTriangle(
 
 // check if a diagonal between two polygon nodes is valid (lies in polygon interior)
 template <typename N>
-bool Earcut<N>::isValidDiagonal(Node* a, Node* b) {
-    return a->next->i != b->i && a->prev->i != b->i && !intersectsPolygon(a, b) && // dones't intersect other edges
-           ((locallyInside(a, b) && locallyInside(b, a) && middleInside(a, b) &&   // locally visible
-             (area(a->prev, a, b->prev) != 0.0 ||
-              area(a, b->prev, b) != 0.0)) || // does not create opposite-facing sectors
-            (equals(a, b) && area(a->prev, a, a->next) > 0 &&
-             area(b->prev, b, b->next) > 0)); // special zero-length case
+bool Earcut<N>::isValidDiagonal(NodeIndex a, NodeIndex b) {
+    return arena[arena[a].next].i != arena[b].i && arena[arena[a].prev].i != arena[b].i &&
+           !intersectsPolygon(a, b) && // dones't intersect other edges
+           ((locallyInside(a, b) && locallyInside(b, a) && middleInside(a, b) && // locally visible
+             (area(arena[a].prev, a, arena[b].prev) != 0.0 ||
+              area(a, arena[b].prev, b) != 0.0)) || // does not create opposite-facing sectors
+            (equals(a, b) && area(arena[a].prev, a, arena[a].next) > 0 &&
+             area(arena[b].prev, b, arena[b].next) > 0)); // special zero-length case
 }
 
 // signed area of a triangle
 template <typename N>
-double Earcut<N>::area(const Node* p, const Node* q, const Node* r) const {
-    return (q->y - p->y) * (r->x - q->x) - (q->x - p->x) * (r->y - q->y);
+double Earcut<N>::area(NodeIndex p, NodeIndex q, NodeIndex r) const {
+    return (arena[q].y - arena[p].y) * (arena[r].x - arena[q].x) -
+           (arena[q].x - arena[p].x) * (arena[r].y - arena[q].y);
 }
 
 // check if two points are equal
 template <typename N>
-bool Earcut<N>::equals(const Node* p1, const Node* p2) {
-    return p1->x == p2->x && p1->y == p2->y;
+bool Earcut<N>::equals(NodeIndex p1, NodeIndex p2) const {
+    return arena[p1].x == arena[p2].x && arena[p1].y == arena[p2].y;
 }
 
 // check if two segments intersect
 template <typename N>
-bool Earcut<N>::intersects(const Node* p1, const Node* q1, const Node* p2, const Node* q2) {
+bool Earcut<N>::intersects(NodeIndex p1, NodeIndex q1, NodeIndex p2, NodeIndex q2) const {
     int o1 = sign(area(p1, q1, p2));
     int o2 = sign(area(p1, q1, q2));
     int o3 = sign(area(p2, q2, p1));
@@ -759,24 +823,27 @@ bool Earcut<N>::intersects(const Node* p1, const Node* q1, const Node* p2, const
 
 // for collinear points p, q, r, check if point q lies on segment pr
 template <typename N>
-bool Earcut<N>::onSegment(const Node* p, const Node* q, const Node* r) {
-    return q->x <= std::max<double>(p->x, r->x) && q->x >= std::min<double>(p->x, r->x) &&
-           q->y <= std::max<double>(p->y, r->y) && q->y >= std::min<double>(p->y, r->y);
+bool Earcut<N>::onSegment(NodeIndex p, NodeIndex q, NodeIndex r) const {
+    return arena[q].x <= std::max<double>(arena[p].x, arena[r].x) &&
+           arena[q].x >= std::min<double>(arena[p].x, arena[r].x) &&
+           arena[q].y <= std::max<double>(arena[p].y, arena[r].y) &&
+           arena[q].y >= std::min<double>(arena[p].y, arena[r].y);
 }
 
 template <typename N>
-int Earcut<N>::sign(double val) {
+int Earcut<N>::sign(double val) const {
     return (0.0 < val) - (val < 0.0);
 }
 
 // check if a polygon diagonal intersects any polygon segments
 template <typename N>
-bool Earcut<N>::intersectsPolygon(const Node* a, const Node* b) {
-    const Node* p = a;
+bool Earcut<N>::intersectsPolygon(NodeIndex a, NodeIndex b) const {
+    NodeIndex p = a;
     do {
-        if (p->i != a->i && p->next->i != a->i && p->i != b->i && p->next->i != b->i && intersects(p, p->next, a, b))
+        if (arena[p].i != arena[a].i && arena[arena[p].next].i != arena[a].i && arena[p].i != arena[b].i &&
+            arena[arena[p].next].i != arena[b].i && intersects(p, arena[p].next, a, b))
             return true;
-        p = p->next;
+        p = arena[p].next;
     } while (p != a);
 
     return false;
@@ -784,23 +851,25 @@ bool Earcut<N>::intersectsPolygon(const Node* a, const Node* b) {
 
 // check if a polygon diagonal is locally inside the polygon
 template <typename N>
-bool Earcut<N>::locallyInside(const Node* a, const Node* b) {
-    return area(a->prev, a, a->next) < 0 ? area(a, b, a->next) >= 0 && area(a, a->prev, b) >= 0
-                                         : area(a, b, a->prev) < 0 || area(a, a->next, b) < 0;
+bool Earcut<N>::locallyInside(NodeIndex a, NodeIndex b) const {
+    return area(arena[a].prev, a, arena[a].next) < 0
+               ? area(a, b, arena[a].next) >= 0 && area(a, arena[a].prev, b) >= 0
+               : area(a, b, arena[a].prev) < 0 || area(a, arena[a].next, b) < 0;
 }
 
 // check if the middle Vertex of a polygon diagonal is inside the polygon
 template <typename N>
-bool Earcut<N>::middleInside(const Node* a, const Node* b) {
-    const Node* p = a;
+bool Earcut<N>::middleInside(NodeIndex a, NodeIndex b) const {
+    NodeIndex p = a;
     bool inside = false;
-    double px = (a->x + b->x) / 2;
-    double py = (a->y + b->y) / 2;
+    double px = (arena[a].x + arena[b].x) / 2;
+    double py = (arena[a].y + arena[b].y) / 2;
     do {
-        if (((p->y > py) != (p->next->y > py)) && p->next->y != p->y &&
-            (px < (p->next->x - p->x) * (py - p->y) / (p->next->y - p->y) + p->x))
+        NodeIndex pNext = arena[p].next;
+        if (((arena[p].y > py) != (arena[pNext].y > py)) && arena[pNext].y != arena[p].y &&
+            (px < (arena[pNext].x - arena[p].x) * (py - arena[p].y) / (arena[pNext].y - arena[p].y) + arena[p].x))
             inside = !inside;
-        p = p->next;
+        p = pNext;
     } while (p != a);
 
     return inside;
@@ -810,54 +879,53 @@ bool Earcut<N>::middleInside(const Node* a, const Node* b) {
 // polygon into two; if one belongs to the outer ring and another to a hole, it merges it into a
 // single ring
 template <typename N>
-typename Earcut<N>::Node* Earcut<N>::splitPolygon(Node* a, Node* b) {
-    Node* a2 = nodes->construct(a->i, a->x, a->y);
-    Node* b2 = nodes->construct(b->i, b->x, b->y);
-    Node* an = a->next;
-    Node* bp = b->prev;
+typename Earcut<N>::NodeIndex Earcut<N>::splitPolygon(NodeIndex a, NodeIndex b) {
+    NodeIndex a2 = arena.construct(static_cast<N>(arena[a].i), arena[a].x, arena[a].y);
+    NodeIndex b2 = arena.construct(static_cast<N>(arena[b].i), arena[b].x, arena[b].y);
+    NodeIndex an = arena[a].next;
+    NodeIndex bp = arena[b].prev;
 
-    a->next = b;
-    b->prev = a;
+    arena[a].next = b;
+    arena[b].prev = a;
 
-    a2->next = an;
-    an->prev = a2;
+    arena[a2].next = an;
+    arena[an].prev = a2;
 
-    b2->next = a2;
-    a2->prev = b2;
+    arena[b2].next = a2;
+    arena[a2].prev = b2;
 
-    bp->next = b2;
-    b2->prev = bp;
+    arena[bp].next = b2;
+    arena[b2].prev = bp;
 
     return b2;
 }
 
-// create a node and util::optionally link it with previous one (in a circular doubly linked list)
+// create a node and optionally link it with previous one (in a circular doubly linked list)
 template <typename N>
 template <typename Point>
-typename Earcut<N>::Node* Earcut<N>::insertNode(std::size_t i, const Point& pt, Node* last) {
-    Node* p = nodes->construct(static_cast<N>(i), util::nth<0, Point>::get(pt), util::nth<1, Point>::get(pt));
+typename Earcut<N>::NodeIndex Earcut<N>::insertNode(std::size_t i, const Point& pt, NodeIndex last) {
+    NodeIndex p = arena.construct(static_cast<N>(i), util::nth<0, Point>::get(pt), util::nth<1, Point>::get(pt));
 
-    if (!last) {
-        p->prev = p;
-        p->next = p;
+    if (last == 0) {
+        arena[p].prev = p;
+        arena[p].next = p;
 
     } else {
-        assert(last);
-        p->next = last->next;
-        p->prev = last;
-        last->next->prev = p;
-        last->next = p;
+        arena[p].next = arena[last].next;
+        arena[p].prev = last;
+        arena[arena[last].next].prev = p;
+        arena[last].next = p;
     }
     return p;
 }
 
 template <typename N>
-void Earcut<N>::removeNode(Node* p) {
-    p->next->prev = p->prev;
-    p->prev->next = p->next;
+void Earcut<N>::removeNode(NodeIndex p) {
+    arena[arena[p].next].prev = arena[p].prev;
+    arena[arena[p].prev].next = arena[p].next;
 
-    if (p->prevZ) p->prevZ->nextZ = p->nextZ;
-    if (p->nextZ) p->nextZ->prevZ = p->prevZ;
+    if (arena[p].prevZ != 0) arena[arena[p].prevZ].nextZ = arena[p].nextZ;
+    if (arena[p].nextZ != 0) arena[arena[p].nextZ].prevZ = arena[p].prevZ;
 }
 } // namespace detail
 
