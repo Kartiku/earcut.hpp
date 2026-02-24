@@ -19,16 +19,11 @@
 #endif
 #if !defined(NOMINMAX)
 #define NOMINMAX
-#define MAPBOX_EARCUT_UNDEF_NOMINMAX
 #endif
 #include <windows.h>
 #ifdef MAPBOX_EARCUT_UNDEF_WIN32_LEAN_AND_MEAN
 #undef WIN32_LEAN_AND_MEAN
 #undef MAPBOX_EARCUT_UNDEF_WIN32_LEAN_AND_MEAN
-#endif
-#ifdef MAPBOX_EARCUT_UNDEF_NOMINMAX
-#undef NOMINMAX
-#undef MAPBOX_EARCUT_UNDEF_NOMINMAX
 #endif
 #elif defined(__unix__) || defined(__APPLE__)
 #include <sys/mman.h>
@@ -91,8 +86,7 @@ private:
         const double bx, by;
         const double cx, cy;
 
-        Triangle(const Node& a, const Node& b, const Node& c)
-            : ax(a.x), ay(a.y), bx(b.x), by(b.y), cx(c.x), cy(c.y) {}
+        Triangle(const Node& a, const Node& b, const Node& c) : ax(a.x), ay(a.y), bx(b.x), by(b.y), cx(c.x), cy(c.y) {}
 
         inline double area() const { return (by - ay) * (cx - bx) - (bx - ax) * (cy - by); }
 
@@ -106,21 +100,21 @@ private:
     NodeIndex linkedList(const Ring& points, const bool clockwise);
     NodeIndex filterPoints(NodeIndex start, NodeIndex end = 0);
     void earcutLinked(NodeIndex ear, int pass = 0);
-    bool isEar(NodeIndex ear);
-    bool isEarHashed(NodeIndex ear);
+    bool isEar(NodeIndex ear) const;
+    bool isEarHashed(NodeIndex ear) const;
     NodeIndex cureLocalIntersections(NodeIndex start);
     void splitEarcut(NodeIndex start);
     template <typename Polygon>
     NodeIndex eliminateHoles(const Polygon& points, NodeIndex outerNode);
     NodeIndex eliminateHole(NodeIndex hole, NodeIndex outerNode);
     NodeIndex findHoleBridge(NodeIndex hole, NodeIndex outerNode);
-    bool sectorContainsSector(NodeIndex m, NodeIndex p);
+    bool sectorContainsSector(NodeIndex m, NodeIndex p) const;
     void indexCurve(NodeIndex start);
     NodeIndex sortLinked(NodeIndex list);
-    int32_t zOrder(const double x_, const double y_);
-    NodeIndex getLeftmost(NodeIndex start);
+    int32_t zOrder(const double x_, const double y_) const;
+    NodeIndex getLeftmost(NodeIndex start) const;
     bool pointInTriangle(double ax, double ay, double bx, double by, double cx, double cy, double px, double py) const;
-    bool isValidDiagonal(NodeIndex a, NodeIndex b);
+    bool isValidDiagonal(NodeIndex a, NodeIndex b) const;
     double area(NodeIndex p, NodeIndex q, NodeIndex r) const;
     bool equals(NodeIndex p1, NodeIndex p2) const;
     bool intersects(NodeIndex p1, NodeIndex q1, NodeIndex p2, NodeIndex q2) const;
@@ -148,7 +142,16 @@ private:
         // Maximum number of nodes the arena can hold.
         // 4M nodes * 40 bytes = ~160MB of virtual address space.
         static constexpr std::size_t kMaxNodes = 1u << 22;
-        static constexpr std::size_t kPageSize = 4096;
+
+        static std::size_t pageSize() {
+#if defined(_WIN32)
+            SYSTEM_INFO si;
+            ::GetSystemInfo(&si);
+            return static_cast<std::size_t>(si.dwPageSize);
+#else
+            return 16384;
+#endif
+        }
 
     public:
         NodeArena() { initReserve(); }
@@ -228,7 +231,8 @@ private:
             std::size_t neededBytes = nodeCount * sizeof(Node);
             if (neededBytes > committed_) {
                 // Round up to page boundary
-                std::size_t newCommitted = (neededBytes + kPageSize - 1) & ~(kPageSize - 1);
+                const std::size_t pgSize = pageSize();
+                std::size_t newCommitted = (neededBytes + pgSize - 1) & ~(pgSize - 1);
                 if (!::VirtualAlloc(data_, newCommitted, MEM_COMMIT, PAGE_READWRITE)) throw std::bad_alloc();
                 committed_ = newCommitted;
             }
@@ -340,6 +344,7 @@ typename Earcut<N>::NodeIndex Earcut<N>::linkedList(const Ring& points, const bo
     if (last != 0 && equals(last, arena[last].next)) {
         removeNode(last);
         last = arena[last].next;
+        //arena.freeNode(last);
     }
 
     vertices += len;
@@ -360,6 +365,7 @@ typename Earcut<N>::NodeIndex Earcut<N>::filterPoints(NodeIndex start, NodeIndex
         if (!arena[p].steiner && (equals(p, arena[p].next) || area(arena[p].prev, p, arena[p].next) == 0)) {
             removeNode(p);
             p = end = arena[p].prev;
+            //arena.freeNode(p);
 
             if (p == arena[p].next) break;
             again = true;
@@ -396,6 +402,7 @@ void Earcut<N>::earcutLinked(NodeIndex ear, int pass) {
             indices.emplace_back(static_cast<N>(arena[next].i));
 
             removeNode(ear);
+            arena.freeNode(ear);
 
             // skipping the next vertice leads to less sliver triangles
             ear = arena[next].next;
@@ -427,7 +434,7 @@ void Earcut<N>::earcutLinked(NodeIndex ear, int pass) {
 
 // check whether a polygon node forms a valid ear with adjacent nodes
 template <typename N>
-bool Earcut<N>::isEar(NodeIndex ear) {
+bool Earcut<N>::isEar(NodeIndex ear) const {
     const NodeIndex a = arena[ear].prev;
     const NodeIndex c = arena[ear].next;
 
@@ -447,7 +454,7 @@ bool Earcut<N>::isEar(NodeIndex ear) {
 }
 
 template <typename N>
-bool Earcut<N>::isEarHashed(NodeIndex ear) {
+bool Earcut<N>::isEarHashed(NodeIndex ear) const {
     const NodeIndex a = arena[ear].prev;
     const NodeIndex c = arena[ear].next;
 
@@ -469,8 +476,7 @@ bool Earcut<N>::isEarHashed(NodeIndex ear) {
     NodeIndex p = arena[ear].nextZ;
 
     while (p != 0 && arena[p].z <= maxZ) {
-        if (p != a && p != c && tri.containsPoint(arena[p].x, arena[p].y) &&
-            area(arena[p].prev, p, arena[p].next) >= 0)
+        if (p != a && p != c && tri.containsPoint(arena[p].x, arena[p].y) && area(arena[p].prev, p, arena[p].next) >= 0)
             return false;
         p = arena[p].nextZ;
     }
@@ -479,8 +485,7 @@ bool Earcut<N>::isEarHashed(NodeIndex ear) {
     p = arena[ear].prevZ;
 
     while (p != 0 && arena[p].z >= minZ) {
-        if (p != a && p != c && tri.containsPoint(arena[p].x, arena[p].y) &&
-            area(arena[p].prev, p, arena[p].next) >= 0)
+        if (p != a && p != c && tri.containsPoint(arena[p].x, arena[p].y) && area(arena[p].prev, p, arena[p].next) >= 0)
             return false;
         p = arena[p].prevZ;
     }
@@ -506,6 +511,8 @@ typename Earcut<N>::NodeIndex Earcut<N>::cureLocalIntersections(NodeIndex start)
             // remove two nodes involved
             removeNode(p);
             removeNode(pn);
+            //arena.freeNode(p);
+            //arena.freeNode(pn);
 
             p = start = b;
         }
@@ -556,8 +563,7 @@ typename Earcut<N>::NodeIndex Earcut<N>::eliminateHoles(const Polygon& points, N
             holeQueue.push_back(getLeftmost(list));
         }
     }
-    std::sort(holeQueue.begin(), holeQueue.end(),
-              [this](NodeIndex a, NodeIndex b) { return arena[a].x < arena[b].x; });
+    std::sort(holeQueue.begin(), holeQueue.end(), [this](NodeIndex a, NodeIndex b) { return arena[a].x < arena[b].x; });
 
     // process holes from left to right
     for (size_t i = 0; i < holeQueue.size(); i++) {
@@ -624,13 +630,11 @@ typename Earcut<N>::NodeIndex Earcut<N>::findHoleBridge(NodeIndex hole, NodeInde
 
     do {
         if (hx >= arena[p].x && arena[p].x >= mx && hx != arena[p].x &&
-            pointInTriangle(
-                hy < my ? hx : qx, hy, mx, my, hy < my ? qx : hx, hy, arena[p].x, arena[p].y)) {
+            pointInTriangle(hy < my ? hx : qx, hy, mx, my, hy < my ? qx : hx, hy, arena[p].x, arena[p].y)) {
             tanCur = std::abs(hy - arena[p].y) / (hx - arena[p].x); // tangential
 
             if (locallyInside(p, hole) &&
-                (tanCur < tanMin ||
-                 (tanCur == tanMin && (arena[p].x > arena[m].x || sectorContainsSector(m, p))))) {
+                (tanCur < tanMin || (tanCur == tanMin && (arena[p].x > arena[m].x || sectorContainsSector(m, p))))) {
                 m = p;
                 tanMin = tanCur;
             }
@@ -644,7 +648,7 @@ typename Earcut<N>::NodeIndex Earcut<N>::findHoleBridge(NodeIndex hole, NodeInde
 
 // whether sector in vertex m contains sector in vertex p in the same coordinates
 template <typename N>
-bool Earcut<N>::sectorContainsSector(NodeIndex m, NodeIndex p) {
+bool Earcut<N>::sectorContainsSector(NodeIndex m, NodeIndex p) const {
     return area(arena[m].prev, m, arena[p].prev) < 0 && area(arena[p].next, m, arena[m].next) < 0;
 }
 
@@ -738,7 +742,7 @@ typename Earcut<N>::NodeIndex Earcut<N>::sortLinked(NodeIndex list) {
 
 // z-order of a Vertex given coords and size of the data bounding box
 template <typename N>
-int32_t Earcut<N>::zOrder(const double x_, const double y_) {
+int32_t Earcut<N>::zOrder(const double x_, const double y_) const {
     // coords are transformed into non-negative 15-bit integer range
     int32_t x = static_cast<int32_t>((x_ - minX) * inv_size);
     int32_t y = static_cast<int32_t>((y_ - minY) * inv_size);
@@ -758,7 +762,7 @@ int32_t Earcut<N>::zOrder(const double x_, const double y_) {
 
 // find the leftmost node of a polygon ring
 template <typename N>
-typename Earcut<N>::NodeIndex Earcut<N>::getLeftmost(NodeIndex start) {
+typename Earcut<N>::NodeIndex Earcut<N>::getLeftmost(NodeIndex start) const {
     NodeIndex p = start;
     NodeIndex leftmost = start;
     do {
@@ -780,9 +784,9 @@ bool Earcut<N>::pointInTriangle(
 
 // check if a diagonal between two polygon nodes is valid (lies in polygon interior)
 template <typename N>
-bool Earcut<N>::isValidDiagonal(NodeIndex a, NodeIndex b) {
+bool Earcut<N>::isValidDiagonal(NodeIndex a, NodeIndex b) const {
     return arena[arena[a].next].i != arena[b].i && arena[arena[a].prev].i != arena[b].i &&
-           !intersectsPolygon(a, b) && // dones't intersect other edges
+           !intersectsPolygon(a, b) &&                                           // dones't intersect other edges
            ((locallyInside(a, b) && locallyInside(b, a) && middleInside(a, b) && // locally visible
              (area(arena[a].prev, a, arena[b].prev) != 0.0 ||
               area(a, arena[b].prev, b) != 0.0)) || // does not create opposite-facing sectors
@@ -852,9 +856,8 @@ bool Earcut<N>::intersectsPolygon(NodeIndex a, NodeIndex b) const {
 // check if a polygon diagonal is locally inside the polygon
 template <typename N>
 bool Earcut<N>::locallyInside(NodeIndex a, NodeIndex b) const {
-    return area(arena[a].prev, a, arena[a].next) < 0
-               ? area(a, b, arena[a].next) >= 0 && area(a, arena[a].prev, b) >= 0
-               : area(a, b, arena[a].prev) < 0 || area(a, arena[a].next, b) < 0;
+    return area(arena[a].prev, a, arena[a].next) < 0 ? area(a, b, arena[a].next) >= 0 && area(a, arena[a].prev, b) >= 0
+                                                     : area(a, b, arena[a].prev) < 0 || area(a, arena[a].next, b) < 0;
 }
 
 // check if the middle Vertex of a polygon diagonal is inside the polygon
@@ -921,8 +924,8 @@ typename Earcut<N>::NodeIndex Earcut<N>::insertNode(std::size_t i, const Point& 
 
 template <typename N>
 void Earcut<N>::removeNode(NodeIndex p) {
-    arena[arena[p].next].prev = arena[p].prev;
-    arena[arena[p].prev].next = arena[p].next;
+    if (arena[p].next != 0) arena[arena[p].next].prev = arena[p].prev;
+    if (arena[p].prev != 0) arena[arena[p].prev].next = arena[p].next;
 
     if (arena[p].prevZ != 0) arena[arena[p].prevZ].nextZ = arena[p].nextZ;
     if (arena[p].nextZ != 0) arena[arena[p].nextZ].prevZ = arena[p].prevZ;
